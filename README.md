@@ -10,21 +10,42 @@ soal.
 ## Struktur
 
 ```
-repo/
-├── .github/workflows/ci.yml
+repo-skeleton/
+├── .github/workflows/ci.yml        # CI/CD pipeline
+├── .gitignore                       # Ignored files
 ├── dataset/
-│   ├── dataset.py
-│   └── requirements.txt
-├── ETL/sparks.py
+│   ├── dataset.py                   # Script pembuat dataset
+│   ├── requirements.txt             # Python dependencies
+│   └── output/                      # Hasil dataset CSV
+│       ├── course_catalog.csv
+│       ├── learner_activities.csv
+│       ├── learner_profiles.csv
+│       └── membership_history.csv
+├── ETL/
+│   └── sparks.py                    # ETL dengan PySpark
 ├── lambda/
 │   ├── lambda_recommendation/
+│   │   ├── lambda_function.py
+│   │   └── .env.example
 │   └── lambda_forecasting/
+│       ├── lambda_function.py
+│       └── .env.example
 ├── el-frontend/
-│   ├── main.go  go.mod  Dockerfile  .env.example
+│   ├── main.go                      # Frontend Go
+│   ├── go.mod
+│   ├── Dockerfile
+│   ├── .env.example
 │   └── html/
+│       ├── index.html
+│       ├── recommendation.html
+│       └── forecasting.html
 ├── ai-incident-response/
-│   ├── app.py  requirements.txt  Dockerfile  .env.example
-└── machine_learning/training.ipynb
+│   ├── app.py                       # FastAPI backend
+│   ├── requirements.txt
+│   ├── Dockerfile
+│   └── .env.example
+└── machine_learning/
+    └── training.ipynb               # Training model ML
 ```
 
 ## Urutan pengerjaan yang disarankan
@@ -37,5 +58,18 @@ repo/
    `.github/workflows/ci.yml`.
 3. **Bagian 3** — buat tabel DynamoDB, CloudWatch Alarms, SNS Topic, deploy ke
    EC2, lalu uji end-to-end sesuai bagian 3.5 di soal.
+
+## Tech Stack
+
+| Komponen       | Teknologi                        |
+| -------------- | -------------------------------- |
+| Dataset        | Python, Pandas                   |
+| ETL            | PySpark, AWS Glue                |
+| ML Model       | Jupyter Notebook, Scikit-learn   |
+| Backend        | Python, FastAPI, Boto3           |
+| Frontend       | Go, HTML/CSS/JS                  |
+| Container      | Docker                           |
+| CI/CD          | GitHub Actions                   |
+| Cloud Services | AWS Lambda, S3, DynamoDB, EC2    |
 
 Selamat mengerjakan!
