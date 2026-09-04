@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <title>Course Recommendation - EduPintar</title>
+</head>
+<body>
+  <h1>Course Recommendation</h1>
+  <form id="form">
+    <label>Learner ID: <input type="text" id="learner_id" required></label><br>
+    <label>Course ID: <input type="text" id="course_id" required></label><br>
+    <button type="submit">Cek Rekomendasi</button>
+  </form>
+  <pre id="result"></pre>
+
+  <script>
+    // TODO: kirim POST ke /api/recommend dengan body {learner_id, course_id}
+    // dan tampilkan hasil recommendation_percentage di #result
+    document.getElementById('form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      document.getElementById('result').textContent = 'TODO: implement fetch ke /api/recommend';
+    });
+  </script>
+</body>
+</html>

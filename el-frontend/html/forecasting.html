@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <title>Enrollment Forecasting - EduPintar</title>
+</head>
+<body>
+  <h1>Enrollment Forecasting</h1>
+  <form id="form">
+    <label>Course ID: <input type="text" id="course_id" required></label><br>
+    <label>Jumlah Hari: <input type="number" id="days" value="7" required></label><br>
+    <button type="submit">Lihat Forecast</button>
+  </form>
+  <pre id="result"></pre>
+
+  <script>
+    // TODO: kirim POST ke /api/forecast dengan body {course_id, days}
+    // dan tampilkan array forecast di #result
+    document.getElementById('form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      document.getElementById('result').textContent = 'TODO: implement fetch ke /api/forecast';
+    });
+  </script>
+</body>
+</html>

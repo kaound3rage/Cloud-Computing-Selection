@@ -1,0 +1,49 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # TODO: buat timestamp version -> yyyy-mm-dd-hh-mm-ss
+      # - name: Set version
+      #   run: echo "VERSION=$(date +'%Y-%m-%d-%H-%M-%S')" >> $GITHUB_ENV
+      # TODO: login ke GHCR (docker/login-action) menggunakan GITHUB_TOKEN
+      # TODO: build & push image dari el-frontend/
+      #   tag: ghcr.io/${{ github.repository }}:frontend-${{ env.VERSION }}
+      - name: TODO
+        run: echo "TODO implement build-frontend job"
+
+  build-ai-incident-response:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # TODO: sama seperti di atas, tapi untuk ai-incident-response/
+      #   tag: ghcr.io/${{ github.repository }}:ai-webhook-${{ env.VERSION }}
+      - name: TODO
+        run: echo "TODO implement build-ai-incident-response job"
+
+  build-example-dataset-csv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # TODO:
+      #   - pip install -r dataset/requirements.txt
+      #   - python dataset/dataset.py
+      #   - susun struktur raw-data/ (learner-profiles/, course-catalog/,
+      #     learner-activities/, membership-history/)
+      #   - zip menjadi raw-data.zip
+      #   - upload semua CSV + raw-data.zip ke GitHub Release dengan tag "dataset"
+      #     (misal pakai action softprops/action-gh-release)
+      - name: TODO
+        run: echo "TODO implement build-example-dataset-csv job"
