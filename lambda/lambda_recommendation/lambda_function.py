@@ -19,7 +19,7 @@ import pickle
 import re
 import time
 import uuid
-from typing import Any, Optional
+from typing import Any
 
 import boto3
 
@@ -34,8 +34,8 @@ COURSE_TABLE = os.environ.get("COURSE_TABLE")
 s3 = boto3.client("s3")
 dynamodb = boto3.resource("dynamodb")
 
-_model: Optional[Any] = None
-_model_loaded_at: Optional[float] = None
+_model: Any | None = None
+_model_loaded_at: float | None = None
 
 
 def load_model() -> Any:
@@ -56,7 +56,7 @@ def load_model() -> Any:
     return _model
 
 
-def get_learner_features(learner_id: str) -> Optional[dict]:
+def get_learner_features(learner_id: str) -> dict | None:
     """Query learner features from DynamoDB."""
     if not LEARNERS_TABLE:
         raise RuntimeError("LEARNERS_TABLE environment variable is required")
@@ -66,7 +66,7 @@ def get_learner_features(learner_id: str) -> Optional[dict]:
     return response.get("Item")
 
 
-def get_course_features(course_id: str) -> Optional[dict]:
+def get_course_features(course_id: str) -> dict | None:
     """Query course features from DynamoDB."""
     if not COURSE_TABLE:
         raise RuntimeError("COURSE_TABLE environment variable is required")
@@ -106,7 +106,7 @@ def build_ok_response(payload: dict, status: int = 200) -> dict:
 
 def build_error_response(error: BaseException) -> dict:
     """Build a standard API Gateway error response."""
-    logger.error("Request failed: %s", error, exc_info=True)
+    logger.error("Request failed: %s", error)
     return build_ok_response(
         {"error": type(error).__name__, "message": str(error)}, status=500
     )
@@ -129,8 +129,8 @@ def compute_recommendation(model: Any, learner_features: dict, course_features: 
             logger.warning("Model has no predict/predict_proba; returning 0")
             return 0.0
         return max(0.0, min(100.0, score))
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Model inference failed: %s", exc, exc_info=True)
+    except Exception:
+        logger.exception("Model inference failed")
         return 0.0
 
 

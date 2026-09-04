@@ -21,7 +21,6 @@ import json
 import logging
 import os
 import time
-from typing import Optional
 
 import boto3
 import httpx
@@ -56,7 +55,7 @@ sns_client = boto3_session.client("sns", region_name=AWS_REGION)
 logs_client = boto3_session.client("logs", region_name=AWS_REGION)
 
 # Cache for expensive resources
-_llm_client: Optional[httpx.AsyncClient] = None
+_llm_client: httpx.AsyncClient | None = None
 
 
 def get_llm_client() -> httpx.AsyncClient:
@@ -238,8 +237,8 @@ async def webhook(request: Request):
             logs = get_recent_error_logs(log_group)
             result = await summarize_with_llm(logs)
             publish_incident_report(alarm_name, result["summary"], result["solution"])
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Incident processing failed: %s", exc, exc_info=True)
+        except Exception as exc:
+            logger.exception("Incident processing failed")
             return Response(status_code=500, content=json.dumps({"error": str(exc)}))
 
         return {"received": True, "alarm": alarm_name, "log_group": log_group, "report_sent": True}

@@ -15,7 +15,7 @@ import csv
 import logging
 import random
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -51,7 +51,7 @@ DEFAULT_ACTIVITIES = 10000
 DEFAULT_MEMBERSHIP = 750
 
 
-def _get_faker(seed: Optional[int]) -> Optional["Faker"]:
+def _get_faker(seed: int | None) -> Optional["Faker"]:
     """Return a seeded Faker instance when available, else None."""
     if Faker is None:
         return None
@@ -80,9 +80,14 @@ def _format_date(value: date) -> str:
     return value.isoformat()
 
 
-def generate_learner_profiles(n: int, output_dir: Path, fake: Optional["Faker"], seed: Optional[int]) -> list[str]:
+def _today() -> date:
+    """Return today's date using a timezone-aware clock."""
+    return datetime.now(timezone.utc).date()
+
+
+def generate_learner_profiles(n: int, output_dir: Path, fake: Optional["Faker"], seed: int | None) -> list[str]:
     """Generate learner_profiles.csv and return the list of learner_id."""
-    today = date.today()
+    today = _today()
     join_start = today - timedelta(days=3 * 365)
     rows: list[dict[str, Any]] = []
     names: set[str] = set()
@@ -139,7 +144,7 @@ def generate_learner_activities(
     if not learner_ids or not course_ids:
         raise ValueError("learner_ids and course_ids must not be empty")
 
-    today = date.today()
+    today = _today()
     activity_start = today - timedelta(days=365)
     rows: list[dict[str, Any]] = []
 
@@ -162,7 +167,7 @@ def generate_membership_history(n: int, output_dir: Path, learner_ids: list[str]
     if not learner_ids:
         raise ValueError("learner_ids must not be empty")
 
-    today = date.today()
+    today = _today()
     history_start = today - timedelta(days=365)
     rows: list[dict[str, Any]] = []
 
@@ -201,12 +206,12 @@ def _read_ids(path: Path, column: str) -> list[str]:
 
 
 def generate_all(
-    output_dir: Optional[Path] = None,
+    output_dir: Path | None = None,
     n_learners: int = DEFAULT_LEARNERS,
     n_courses: int = DEFAULT_COURSES,
     n_activities: int = DEFAULT_ACTIVITIES,
     n_membership: int = DEFAULT_MEMBERSHIP,
-    seed: Optional[int] = None,
+    seed: int | None = None,
 ) -> Path:
     """Generate the full EduPintar dataset."""
     output_dir = output_dir or DEFAULT_OUTPUT_DIR
@@ -219,12 +224,12 @@ def generate_all(
     generate_learner_activities(n_activities, output_dir, learner_ids, course_ids)
     generate_membership_history(n_membership, output_dir, learner_ids)
 
-    generated_at = datetime.now().isoformat(timespec="seconds")
+    generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     logger.info("Dataset generation complete at %s. Output: %s", generated_at, output_dir)
     return output_dir
 
 
-def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generator dataset sintetis EduPintar")
     parser.add_argument("--output", "-o", type=Path, default=DEFAULT_OUTPUT_DIR,
                         help=f"Output directory (default: {DEFAULT_OUTPUT_DIR})")
@@ -241,7 +246,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
     if args.learners < 1 or args.courses < 1 or args.activities < 1 or args.membership < 1:

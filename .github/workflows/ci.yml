@@ -70,7 +70,7 @@ jobs:
       - name: Lint with ruff
         run: |
           pip install ruff
-          ruff check ai-incident-response/
+          ruff check .
 
       - name: Compile check
         working-directory: ai-incident-response

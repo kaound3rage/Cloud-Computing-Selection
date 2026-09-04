@@ -20,8 +20,8 @@ import pickle
 import re
 import time
 import uuid
-from datetime import date, timedelta
-from typing import Any, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import boto3
 
@@ -40,8 +40,8 @@ MIN_DAYS = 1
 s3 = boto3.client("s3")
 dynamodb = boto3.resource("dynamodb")
 
-_model: Optional[Any] = None
-_model_loaded_at: Optional[float] = None
+_model: Any | None = None
+_model_loaded_at: float | None = None
 
 
 def load_model() -> Any:
@@ -88,7 +88,7 @@ def validate_days(days: Any) -> int:
     return days
 
 
-def get_enrollment_history(course_id: str) -> Optional[dict]:
+def get_enrollment_history(course_id: str) -> dict | None:
     """Query historical enrollment data from DynamoDB."""
     if not ENROLLMENT_HISTORY_TABLE:
         raise RuntimeError("ENROLLMENT_HISTORY_TABLE environment variable is required")
@@ -98,7 +98,7 @@ def get_enrollment_history(course_id: str) -> Optional[dict]:
     return response.get("Item")
 
 
-def run_forecast(model: Any, history: Optional[dict], course_id: str, days: int) -> list[dict]:
+def run_forecast(model: Any, history: dict | None, course_id: str, days: int) -> list[dict]:
     """Generate a daily enrollment forecast for the requested horizon."""
     base = _baseline_daily_enrollments(history)
 
@@ -106,7 +106,7 @@ def run_forecast(model: Any, history: Optional[dict], course_id: str, days: int)
         try:
             future = model.predict(days=days).tolist()
             return [{
-                "date": (date.today() + timedelta(days=i)).isoformat(),
+                "date": (datetime.now(timezone.utc).date() + timedelta(days=i)).isoformat(),
                 "predicted_enrollments": round(max(0.0, float(v)), 2),
             } for i, v in enumerate(future)]
         except Exception as exc:  # noqa: BLE001
@@ -115,12 +115,12 @@ def run_forecast(model: Any, history: Optional[dict], course_id: str, days: int)
             )
 
     return [{
-        "date": (date.today() + timedelta(days=i)).isoformat(),
+        "date": (datetime.now(timezone.utc).date() + timedelta(days=i)).isoformat(),
         "predicted_enrollments": round(max(0.0, base * (1 + 0.02 * i)), 2),
     } for i in range(days)]
 
 
-def _baseline_daily_enrollments(history: Optional[dict]) -> float:
+def _baseline_daily_enrollments(history: dict | None) -> float:
     """Derive a naive baseline (avg daily enrollments) from history."""
     if not history:
         return 0.0
@@ -153,7 +153,7 @@ def build_ok_response(payload: dict, status: int = 200) -> dict:
 
 def build_error_response(error: BaseException, status: int = 500) -> dict:
     """Build a standard API Gateway error response."""
-    logger.error("Request failed: %s", error, exc_info=True)
+    logger.error("Request failed: %s", error)
     return build_ok_response(
         {"error": type(error).__name__, "message": str(error)}, status=status
     )

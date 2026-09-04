@@ -49,7 +49,7 @@ def read_glue_table(table_name: str):
         ).toDF()
         print(f"[INFO] Loaded table: {table_name} ({df.count()} rows)")
         return df
-    except Exception as exc:  # noqa: BLE001 - Glue surfaces different exceptions
+    except Exception as exc:
         print(f"[ERROR] Failed to load table {table_name}: {exc}")
         raise
 
