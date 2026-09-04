@@ -1,14 +1,16 @@
-# TODO: lengkapi multi-stage build (base image golang untuk build,
-# lalu image minimal untuk runtime). Expose port 3000.
-
+# Multi-stage build for el-frontend
+# Stage 1: build the Go binary
 FROM golang:1.22 AS builder
 WORKDIR /app
+COPY go.mod ./
+RUN go mod download
 COPY . .
-# RUN go mod tidy && go build -o el-frontend main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/el-frontend main.go
 
-FROM golang:1.22
+# Stage 2: minimal runtime image
+FROM scratch
 WORKDIR /app
-# COPY --from=builder /app/el-frontend .
+COPY --from=builder /out/el-frontend ./el-frontend
 COPY html ./html
 EXPOSE 3000
-# CMD ["./el-frontend"]
+CMD ["./el-frontend"]

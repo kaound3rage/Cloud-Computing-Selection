@@ -2,24 +2,163 @@
 <html lang="id">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Enrollment Forecasting - EduPintar</title>
+  <style>
+    :root {
+      --primary: #4f46e5;
+      --primary-dark: #4338ca;
+      --bg: #f8fafc;
+      --text: #1e293b;
+      --muted: #64748b;
+      --card: #ffffff;
+      --border: #e2e8f0;
+      --danger: #dc2626;
+      --line: #e2e8f0;
+      --bar: #6366f1;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    header {
+      background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+      color: #fff;
+      width: 100%;
+      padding: 1.5rem;
+      text-align: center;
+    }
+    header a { color: #fff; opacity: 0.9; font-size: 0.9rem; text-decoration: none; }
+    main { flex: 1; max-width: 720px; width: 100%; padding: 2rem 1.5rem; }
+    form {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem;
+      display: grid;
+      grid-template-columns: 2fr 1fr auto;
+      gap: 1rem;
+      align-items: end;
+    }
+    label { font-weight: 600; font-size: 0.85rem; display: grid; gap: 0.4rem; }
+    input {
+      padding: 0.65rem 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 1rem;
+      width: 100%;
+    }
+    input:focus { outline: 2px solid var(--primary); border-color: transparent; }
+    button {
+      background: var(--primary);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 0.75rem 1.25rem;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s ease;
+    }
+    button:hover { background: var(--primary-dark); }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    #result { margin-top: 1.5rem; display: none; }
+    #error { color: var(--danger); font-weight: 600; margin-top: 1rem; display: none; }
+    .chart-wrap { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; }
+    .chart { display: flex; align-items: flex-end; gap: 4px; height: 240px; border-bottom: 1px solid var(--line); }
+    .bar-col { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; text-align: center; }
+    .bar { background: var(--bar); border-radius: 3px 3px 0 0; min-height: 2px; }
+    .bar-label { font-size: 0.65rem; color: var(--muted); margin-top: 0.3rem; white-space: nowrap; }
+    .summary { display: flex; justify-content: space-between; margin-top: 1rem; font-weight: 600; }
+    .back { display: inline-block; margin-top: 1rem; color: var(--primary); text-decoration: none; font-weight: 600; }
+    @media (max-width: 560px) {
+      form { grid-template-columns: 1fr; }
+    }
+  </style>
 </head>
 <body>
-  <h1>Enrollment Forecasting</h1>
-  <form id="form">
-    <label>Course ID: <input type="text" id="course_id" required></label><br>
-    <label>Jumlah Hari: <input type="number" id="days" value="7" required></label><br>
-    <button type="submit">Lihat Forecast</button>
-  </form>
-  <pre id="result"></pre>
+  <header>
+    <h1>Enrollment Forecasting</h1>
+    <a href="/">&larr; Kembali ke Beranda</a>
+  </header>
+  <main>
+    <form id="form">
+      <label for="course_id">Course ID</label>
+      <input type="text" id="course_id" placeholder="contoh: C00001" required>
+      <label for="days">Jumlah Hari</label>
+      <input type="number" id="days" value="7" min="1" max="365" required>
+      <button type="submit" id="submit-btn">Lihat Forecast</button>
+    </form>
+    <div id="error"></div>
+    <div id="result" class="chart-wrap"></div>
+  </main>
 
   <script>
-    // TODO: kirim POST ke /api/forecast dengan body {course_id, days}
-    // dan tampilkan array forecast di #result
-    document.getElementById('form').addEventListener('submit', async (e) => {
+    const form = document.getElementById('form');
+    const result = document.getElementById('result');
+    const errorBox = document.getElementById('error');
+    const submitBtn = document.getElementById('submit-btn');
+
+    form.addEventListener('submit', async (e) => {
       e.preventDefault();
-      document.getElementById('result').textContent = 'TODO: implement fetch ke /api/forecast';
+      const course_id = document.getElementById('course_id').value.trim();
+      const days = document.getElementById('days').value;
+      errorBox.style.display = 'none';
+      result.style.display = 'block';
+      result.innerHTML = '<p>Memproses...</p>';
+      submitBtn.disabled = true;
+
+      try {
+        const res = await fetch('/api/forecast', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ course_id, days: parseInt(days, 10) })
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+          throw new Error(data.message || data.error || 'Terjadi kesalahan');
+        }
+
+        renderChart(data.forecast, data.course_id);
+      } catch (err) {
+        result.style.display = 'none';
+        errorBox.textContent = 'Error: ' + err.message;
+        errorBox.style.display = 'block';
+      } finally {
+        submitBtn.disabled = false;
+      }
     });
+
+    function renderChart(forecast, courseId) {
+      if (!Array.isArray(forecast) || forecast.length === 0) {
+        result.innerHTML = '<p>Tidak ada data forecast.</p>';
+        return;
+      }
+
+      const maxVal = Math.max(...forecast.map(f => f.predicted_enrollments), 1);
+      let html = '<div class="chart">';
+      for (const item of forecast) {
+        const height = Math.max((item.predicted_enrollments / maxVal) * 100, 2);
+        html += `<div class="bar-col">
+                   <div class="bar" style="height:${height}%" title="${item.predicted_enrollments} enrollments"></div>
+                   <div class="bar-label">${item.date.slice(5)}</div>
+                 </div>`;
+      }
+      html += '</div>';
+      html += `<div class="summary">
+                 <span>Course: ${courseId}</span>
+                 <span>Total: ${forecast.reduce((s, f) => s + f.predicted_enrollments, 0).toFixed(2)}</span>
+                 <span>Avg: ${(forecast.reduce((s, f) => s + f.predicted_enrollments, 0) / forecast.length).toFixed(2)}</span>
+               </div>`;
+      result.innerHTML = html;
+    }
   </script>
 </body>
 </html>

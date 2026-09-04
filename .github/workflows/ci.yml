@@ -3,47 +3,132 @@ name: CI/CD
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
 
 env:
   REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   build-frontend:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
-      # TODO: buat timestamp version -> yyyy-mm-dd-hh-mm-ss
-      # - name: Set version
-      #   run: echo "VERSION=$(date +'%Y-%m-%d-%H-%M-%S')" >> $GITHUB_ENV
-      # TODO: login ke GHCR (docker/login-action) menggunakan GITHUB_TOKEN
-      # TODO: build & push image dari el-frontend/
-      #   tag: ghcr.io/${{ github.repository }}:frontend-${{ env.VERSION }}
-      - name: TODO
-        run: echo "TODO implement build-frontend job"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Set version
+        run: echo "VERSION=$(date +'%Y-%m-%d-%H-%M-%S')" >> $GITHUB_ENV
+
+      - name: Build Go binary
+        working-directory: el-frontend
+        run: |
+          go mod download
+          go vet ./...
+          go build -o /dev/null ./...
+          go build -o el-frontend ./...
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./el-frontend
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:frontend-${{ env.VERSION }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:frontend-latest
 
   build-ai-incident-response:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
-      # TODO: sama seperti di atas, tapi untuk ai-incident-response/
-      #   tag: ghcr.io/${{ github.repository }}:ai-webhook-${{ env.VERSION }}
-      - name: TODO
-        run: echo "TODO implement build-ai-incident-response job"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set version
+        run: echo "VERSION=$(date +'%Y-%m-%d-%H-%M-%S')" >> $GITHUB_ENV
+
+      - name: Lint with ruff
+        run: |
+          pip install ruff
+          ruff check ai-incident-response/
+
+      - name: Compile check
+        working-directory: ai-incident-response
+        run: python -m py_compile app.py
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./ai-incident-response
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:ai-webhook-${{ env.VERSION }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:ai-webhook-latest
 
   build-example-dataset-csv:
     runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      # TODO:
-      #   - pip install -r dataset/requirements.txt
-      #   - python dataset/dataset.py
-      #   - susun struktur raw-data/ (learner-profiles/, course-catalog/,
-      #     learner-activities/, membership-history/)
-      #   - zip menjadi raw-data.zip
-      #   - upload semua CSV + raw-data.zip ke GitHub Release dengan tag "dataset"
-      #     (misal pakai action softprops/action-gh-release)
-      - name: TODO
-        run: echo "TODO implement build-example-dataset-csv job"
+
+      - name: Install dependencies
+        run: pip install -r dataset/requirements.txt
+
+      - name: Generate dataset
+        run: python dataset/dataset.py --output dataset/output
+
+      - name: Compose raw-data structure
+        run: |
+          mkdir -p raw-data/learner-profiles \
+                   raw-data/course-catalog \
+                   raw-data/learner-activities \
+                   raw-data/membership-history
+          cp dataset/output/learner_profiles.csv raw-data/learner-profiles/
+          cp dataset/output/course_catalog.csv raw-data/course-catalog/
+          cp dataset/output/learner_activities.csv raw-data/learner-activities/
+          cp dataset/output/membership_history.csv raw-data/membership-history/
+          zip -r raw-data.zip raw-data/
+
+      - name: Upload dataset to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "dataset"
+          files: |
+            raw-data.zip
+            dataset/output/learner_profiles.csv
+            dataset/output/course_catalog.csv
+            dataset/output/learner_activities.csv
+            dataset/output/membership_history.csv

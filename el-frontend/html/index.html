@@ -2,15 +2,80 @@
 <html lang="id">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>EduPintar</title>
+  <style>
+    :root {
+      --primary: #4f46e5;
+      --primary-dark: #4338ca;
+      --bg: #f8fafc;
+      --text: #1e293b;
+      --muted: #64748b;
+      --card: #ffffff;
+      --border: #e2e8f0;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+      color: #fff;
+      padding: 2rem 1.5rem;
+      text-align: center;
+    }
+    header h1 { font-size: 2rem; margin-bottom: 0.25rem; }
+    header p { opacity: 0.9; }
+    main {
+      flex: 1;
+      max-width: 720px;
+      margin: 2rem auto;
+      padding: 0 1.5rem;
+      width: 100%;
+    }
+    .menu { list-style: none; display: grid; gap: 1rem; }
+    .menu a {
+      display: block;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.25rem;
+      text-decoration: none;
+      color: var(--text);
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+    .menu a:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 16px rgba(0,0,0,0.08);
+      border-color: var(--primary);
+    }
+    .menu h2 { color: var(--primary); font-size: 1.1rem; margin-bottom: 0.25rem; }
+    .menu p { color: var(--muted); font-size: 0.9rem; }
+    footer {
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.85rem;
+      padding: 1.5rem;
+    }
+  </style>
 </head>
 <body>
-  <h1>EduPintar</h1>
-  <p>Platform belajar online — Intelligent Course Recommendation &amp; Enrollment Forecasting.</p>
-  <ul>
-    <li><a href="/recommendation">Coba Rekomendasi Kursus</a></li>
-    <li><a href="/forecasting">Coba Forecasting Enrollment</a></li>
-  </ul>
-  <!-- TODO: percantik tampilan -->
+  <header>
+    <h1>EduPintar</h1>
+    <p>Platform belajar online — Intelligent Course Recommendation &amp; Enrollment Forecasting</p>
+  </header>
+  <main>
+    <ul class="menu">
+      <li><a href="/recommendation"><h2>Course Recommendation</h2><p>Cek persentase kecocokan kursus untuk learner tertentu.</p></a></li>
+      <li><a href="/forecasting"><h2>Enrollment Forecasting</h2><p>Lihat prediksi jumlah enrollment kursus di masa depan.</p></a></li>
+    </ul>
+  </main>
+  <footer>EduPintar &copy; LKS DIY Cloud Computing 2026</footer>
 </body>
 </html>

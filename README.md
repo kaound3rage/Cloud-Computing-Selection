@@ -1,75 +1,102 @@
 # EduPintar — Repo Skeleton (Latihan LKS Cloud Computing)
 
-Kerangka awal repository untuk mengerjakan **Soal Latihan LKS DIY Bidang Cloud
-Computing 2026 — studi kasus EduPintar** (lihat PDF soal).
-
-Semua file di sini adalah **stub/kerangka** (berisi komentar `TODO`), bukan
-solusi jadi — silakan lengkapi sesuai instruksi di masing-masing Bagian pada
-soal.
+Repository untuk mengerjakan **Soal Latihan LKS DIY Bidang Cloud Computing 2026 —
+studi kasus EduPintar** (Intelligent Course Recommendation &amp; Enrollment
+Forecasting API). Mayoritas komponen sudah diimplementasikan siap pakai.
 
 ## Struktur
 
 ```
 repo-skeleton/
-├── .github/workflows/ci.yml        # CI/CD pipeline
-├── .gitignore                       # Ignored files
+├── .github/workflows/ci.yml        # CI/CD pipeline (build, lint, dataset release)
+├── .gitignore                      # Ignored files
 ├── dataset/
-│   ├── dataset.py                   # Script pembuat dataset
-│   ├── requirements.txt             # Python dependencies
-│   └── output/                      # Hasil dataset CSV
+│   ├── dataset.py                  # Generator dataset sintetis (CLI)
+│   ├── requirements.txt            # Python dependencies
+│   └── output/                     # Hasil dataset CSV
 │       ├── course_catalog.csv
 │       ├── learner_activities.csv
 │       ├── learner_profiles.csv
 │       └── membership_history.csv
 ├── ETL/
-│   └── sparks.py                    # ETL dengan PySpark
+│   └── sparks.py                   # AWS Glue PySpark job (Penyimpanan, transformasi)
 ├── lambda/
-│   ├── lambda_recommendation/
+│   ├── lambda_recommendation/      # Lambda rekomendasi kursus
 │   │   ├── lambda_function.py
+│   │   ├── requirements.txt
 │   │   └── .env.example
-│   └── lambda_forecasting/
+│   └── lambda_forecasting/         # Lambda forecasting enrollment
 │       ├── lambda_function.py
+│       ├── requirements.txt
 │       └── .env.example
 ├── el-frontend/
-│   ├── main.go                      # Frontend Go
+│   ├── main.go                     # Server Go + reverse proxy (inject x-api-key)
 │   ├── go.mod
-│   ├── Dockerfile
+│   ├── Dockerfile                  # Multi-stage build
+│   ├── .dockerignore
 │   ├── .env.example
-│   └── html/
+│   └── html/                       # Halaman frontend (CSS + JS fetch)
 │       ├── index.html
 │       ├── recommendation.html
 │       └── forecasting.html
 ├── ai-incident-response/
-│   ├── app.py                       # FastAPI backend
+│   ├── app.py                      # FastAPI webhook incident response + LLM
 │   ├── requirements.txt
-│   ├── Dockerfile
+│   ├── Dockerfile                  # Multi-stage build
+│   ├── .dockerignore
 │   └── .env.example
 └── machine_learning/
-    └── training.ipynb               # Training model ML
+    └── training.ipynb              # Training model ML
 ```
 
-## Urutan pengerjaan yang disarankan
+## Quick Start
 
-1. **Bagian 1** — lengkapi `dataset/dataset.py`, buat S3 bucket & Glue
-   (`ETL/sparks.py`), latih model di `machine_learning/training.ipynb`,
-   lengkapi kedua Lambda di `lambda/`, lalu buat API Gateway.
-2. **Bagian 2** — lengkapi `el-frontend/` (Go) dan `ai-incident-response/`
-   (FastAPI), buat Dockerfile masing-masing, lalu lengkapi
-   `.github/workflows/ci.yml`.
-3. **Bagian 3** — buat tabel DynamoDB, CloudWatch Alarms, SNS Topic, deploy ke
-   EC2, lalu uji end-to-end sesuai bagian 3.5 di soal.
+### 1. Generate dataset
+```bash
+pip install -r dataset/requirements.txt
+python dataset/dataset.py                       # ukuran default (~1000/500/10000/750)
+python dataset/dataset.py --learners 500 --courses 200 --seed 42   # kustom + reproducible
+```
+
+### 2. Jalankan frontend (Go)
+```bash
+cd el-frontend
+go run .       # default PORT=3000
+```
+
+### 3. Jalankan AI Incident Response (FastAPI)
+```bash
+cd ai-incident-response
+pip install -r requirements.txt
+uvicorn app:app --host 0.0.0.0 --port 8080
+```
+
+### 4. Build Docker images
+```bash
+docker build -t el-frontend ./el-frontend
+docker build -t ai-incident-response ./ai-incident-response
+```
+
+## Endpoint API
+
+| Route (frontend)      | Target Lambda / Service        | Body                              |
+| --------------------- | ------------------------------ | --------------------------------- |
+| `POST /api/recommend` | `API_RECOMMEND` (Lambda)       | `{learner_id, course_id}`         |
+| `POST /api/forecast`  | `API_FORECAST` (Lambda)        | `{course_id, days}`               |
+| `POST /webhook`       | ai-incident-response (SNS)     | SNS message (Subscription/Notify) |
+| `GET /health`         | ai-incident-response           | —                                 |
 
 ## Tech Stack
 
 | Komponen       | Teknologi                        |
 | -------------- | -------------------------------- |
-| Dataset        | Python, Pandas                   |
+| Dataset        | Python, Pandas, Faker            |
 | ETL            | PySpark, AWS Glue                |
 | ML Model       | Jupyter Notebook, Scikit-learn   |
 | Backend        | Python, FastAPI, Boto3           |
 | Frontend       | Go, HTML/CSS/JS                  |
-| Container      | Docker                           |
-| CI/CD          | GitHub Actions                   |
+| Container      | Docker (multi-stage)             |
+| CI/CD          | GitHub Actions + GHCR            |
 | Cloud Services | AWS Lambda, S3, DynamoDB, EC2    |
 
 Selamat mengerjakan!
