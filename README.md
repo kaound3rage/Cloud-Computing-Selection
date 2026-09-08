@@ -12,7 +12,9 @@ repo-skeleton/
 ├── .gitignore                      # Ignored files
 ├── dataset/
 │   ├── dataset.py                  # Generator dataset sintetis (CLI)
+│   ├── setup-bucket.py             # Setup S3 bucket: struktur folder + upload raw data
 │   ├── requirements.txt            # Python dependencies
+│   ├── .env.example                # Template env AWS (S3_BUCKET, region, kredensial)
 │   └── output/                     # Hasil dataset CSV
 │       ├── farm_profiles.csv       # ~1000 lahan pertanian
 │       ├── crop_catalog.csv        # ~500 jenis padi/tanaman
@@ -52,13 +54,20 @@ python dataset/dataset.py                       # ukuran default (~1000/500/1000
 python dataset/dataset.py --seed 42             # reproducible
 ```
 
-### 2. Jalankan frontend (Go)
+### 2. Setup S3 bucket (struktur folder + upload raw data)
+```bash
+pip install -r dataset/requirements.txt
+python dataset/setup-bucket.py --bucket [NAMA_BUCKET] --region [REGION]
+python dataset/setup-bucket.py --no-upload      # hanya buat struktur folder
+```
+
+### 3. Jalankan frontend (Go)
 ```bash
 cd el-frontend
 go run .       # default PORT=3000
 ```
 
-### 3. Build Docker images
+### 4. Build Docker images
 ```bash
 docker build -t el-frontend ./el-frontend
 ```
