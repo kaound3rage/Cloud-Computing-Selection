@@ -1,16 +1,19 @@
-# Multi-stage build for el-frontend
-# Stage 1: build the Go binary
-FROM golang:1.22 AS builder
+# Multi-stage build for farm-frontend (AgroSense, di folder el-frontend).
+# Stage 1: build Go binary.
+FROM golang:1.22-alpine AS builder
 WORKDIR /app
-COPY go.mod ./
+COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /out/el-frontend main.go
+# Static binary agar bisa jalan di image alpine minimal.
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /out/farm-frontend main.go
 
-# Stage 2: minimal runtime image
-FROM scratch
+# Stage 2: runtime minimal.
+FROM alpine:3.20
 WORKDIR /app
-COPY --from=builder /out/el-frontend ./el-frontend
+# ca-certificates wajib untuk HTTPS ke API Gateway & DynamoDB.
+RUN apk add --no-cache ca-certificates
+COPY --from=builder /out/farm-frontend ./farm-frontend
 COPY html ./html
 EXPOSE 3000
-CMD ["./el-frontend"]
+CMD ["./farm-frontend"]

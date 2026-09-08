@@ -1,32 +1,32 @@
-# EduPintar — Repo Skeleton (Latihan LKS Cloud Computing)
+# AgroSense — Repo Skeleton (Latihan LKS Cloud Computing)
 
 Repository untuk mengerjakan **Soal Latihan LKS DIY Bidang Cloud Computing 2026 —
-studi kasus EduPintar** (Intelligent Course Recommendation &amp; Enrollment
-Forecasting API). Mayoritas komponen sudah diimplementasikan siap pakai.
+studi kasus AgroSense** (Smart Crop Risk & Yield Forecasting Platform, tema
+TaniCerdas). Mayoritas komponen sudah diimplementasikan siap pakai.
 
 ## Struktur
 
 ```
 repo-skeleton/
-├── .github/workflows/ci.yml        # CI/CD pipeline (build, lint, dataset release)
+├── .github/workflows/ci.yml        # CI/CD pipeline (build, dataset release)
 ├── .gitignore                      # Ignored files
 ├── dataset/
 │   ├── dataset.py                  # Generator dataset sintetis (CLI)
 │   ├── requirements.txt            # Python dependencies
 │   └── output/                     # Hasil dataset CSV
-│       ├── course_catalog.csv
-│       ├── learner_activities.csv
-│       ├── learner_profiles.csv
-│       └── membership_history.csv
+│       ├── farm_profiles.csv       # ~1000 lahan pertanian
+│       ├── crop_catalog.csv        # ~500 jenis padi/tanaman
+│       ├── farm_activities.csv     # ~10000 aktivitas tanam/pupuk/panen
+│       └── harvest_history.csv     # ~750 riwayat panen
 ├── ETL/
-│   └── sparks.py                   # AWS Glue PySpark job (Penyimpanan, transformasi)
+│   └── sparks.py                   # AWS Glue PySpark job (validasi + feature)
 ├── lambda/
-│   ├── lambda_recommendation/      # Lambda rekomendasi kursus
-│   │   ├── lambda_function.py
+│   ├── lambda_recommendation/      # Lambda prediksi risiko gagal panen
+│   │   ├── lambda_function.py      #   (synch, API Gateway + x-api-key)
 │   │   ├── requirements.txt
 │   │   └── .env.example
-│   └── lambda_forecasting/         # Lambda forecasting enrollment
-│       ├── lambda_function.py
+│   └── lambda_forecasting/         # Lambda forecasting hasil panen
+│       ├── lambda_function.py      #   (EventBridge schedule, tulis DynamoDB)
 │       ├── requirements.txt
 │       └── .env.example
 ├── el-frontend/
@@ -36,17 +36,11 @@ repo-skeleton/
 │   ├── .dockerignore
 │   ├── .env.example
 │   └── html/                       # Halaman frontend (CSS + JS fetch)
-│       ├── index.html
-│       ├── recommendation.html
-│       └── forecasting.html
-├── ai-incident-response/
-│   ├── app.py                      # FastAPI webhook incident response + LLM
-│   ├── requirements.txt
-│   ├── Dockerfile                  # Multi-stage build
-│   ├── .dockerignore
-│   └── .env.example
+│       ├── index.html              #   landing page
+│       ├── risk.html               #   form prediksi risiko gagal panen
+│       └── forecasting.html        #   form perkiraan hasil panen
 └── machine_learning/
-    └── training.ipynb              # Training model ML
+    └── training.ipynb              # Training model ML (risk + yield)
 ```
 
 ## Quick Start
@@ -55,7 +49,7 @@ repo-skeleton/
 ```bash
 pip install -r dataset/requirements.txt
 python dataset/dataset.py                       # ukuran default (~1000/500/10000/750)
-python dataset/dataset.py --learners 500 --courses 200 --seed 42   # kustom + reproducible
+python dataset/dataset.py --seed 42             # reproducible
 ```
 
 ### 2. Jalankan frontend (Go)
@@ -64,27 +58,19 @@ cd el-frontend
 go run .       # default PORT=3000
 ```
 
-### 3. Jalankan AI Incident Response (FastAPI)
-```bash
-cd ai-incident-response
-pip install -r requirements.txt
-uvicorn app:app --host 0.0.0.0 --port 8080
-```
-
-### 4. Build Docker images
+### 3. Build Docker images
 ```bash
 docker build -t el-frontend ./el-frontend
-docker build -t ai-incident-response ./ai-incident-response
 ```
 
 ## Endpoint API
 
-| Route (frontend)      | Target Lambda / Service        | Body                              |
-| --------------------- | ------------------------------ | --------------------------------- |
-| `POST /api/recommend` | `API_RECOMMEND` (Lambda)       | `{learner_id, course_id}`         |
-| `POST /api/forecast`  | `API_FORECAST` (Lambda)        | `{course_id, days}`               |
-| `POST /webhook`       | ai-incident-response (SNS)     | SNS message (Subscription/Notify) |
-| `GET /health`         | ai-incident-response           | —                                 |
+| Route (frontend)              | Target Lambda / Service                    | Body                              |
+| ----------------------------- | ------------------------------------------ | --------------------------------- |
+| `POST /api/predict-risk`      | `API_PREDICT_RISK` (Lambda, via proxy x-api-key) | `{farm_id, crop_id}`        |
+| `GET /api/yield-forecast/{crop_id}` | DynamoDB `YIELD_HISTORY_TABLE` (langsung) | —                            |
+| `GET /risk`, `GET /forecasting` | Halaman frontend                         | —                                |
+| `GET /health`                 | frontend                                   | —                                 |
 
 ## Tech Stack
 
@@ -93,10 +79,9 @@ docker build -t ai-incident-response ./ai-incident-response
 | Dataset        | Python, Pandas, Faker            |
 | ETL            | PySpark, AWS Glue                |
 | ML Model       | Jupyter Notebook, Scikit-learn   |
-| Backend        | Python, FastAPI, Boto3           |
 | Frontend       | Go, HTML/CSS/JS                  |
 | Container      | Docker (multi-stage)             |
 | CI/CD          | GitHub Actions + GHCR            |
-| Cloud Services | AWS Lambda, S3, DynamoDB, EC2    |
+| Cloud Services | AWS Lambda, S3, DynamoDB, EC2, CloudWatch |
 
 Selamat mengerjakan!

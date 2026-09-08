@@ -1,34 +1,44 @@
 """
-ETL/sparks.py — AWS Glue PySpark job untuk EduPintar
+ETL/sparks.py — AWS Glue PySpark job untuk AgroSense
+(Smart Crop Risk & Yield Forecasting Platform)
 
-Membaca tabel dari Glue Data Catalog (database: edupintar_database):
-  - learner_profiles
-  - learner_activities
-  - course_catalog
+Membaca 4 tabel dari Glue Data Catalog (database: agrosense_database):
+  - farm_profiles
+  - crop_catalog
+  - farm_activities
+  - harvest_history
 
-Menghasilkan (disimpan ke s3://[bucket]/processed-data/ dalam format Parquet):
-  - course_enrollment_matrix  (matrix interaksi learner x course untuk model)
-  - course_stats              (statistik agregat per course: jumlah enroll,
-                                completion rate, avg rating, dst.)
-  - learner_features          (fitur per learner: total course selesai,
-                                kategori favorit, dst.)
+Dua tahap:
+1. VALIDASI KUALITAS DATA
+   Filter record tidak valid (nilai negatif, null kolom wajib, nilai di luar
+   rentang wajar). Record yang ditolak ditulis ke:
+     s3://[BUCKET]/processed-data/rejected_records/   (Parquet)
+   dengan kolom tambahan `rejection_reason`.
+
+2. FEATURE ENGINEERING (dari data valid) -> 3 output Parquet:
+     s3://[BUCKET]/processed-data/
+       farm_activity_matrix/  (agregasi aktivitas per farm x crop)
+       crop_stats/            (statistik hasil panen per crop)
+       farm_features/         (fitur gabungan per farm untuk model risiko)
 
 Usage (AWS Glue):
   aws glue start-job-run --job-name [JOB_NAME] \
-    --arguments '{"--S3_BUCKET":"my-bucket","--GLUE_DATABASE":"edupintar_database"}'
+    --arguments '{"--S3_BUCKET":"my-bucket","--DATABASE_NAME":"agrosense_database"}'
+
+Bisa dijalankan lokal: spark-submit ETL/sparks.py --JOB_NAME test --S3_BUCKET x --DATABASE_NAME y
 """
 import sys
 
 from awsglue.context import GlueContext
 from awsglue.job import Job
-from awsglue.transforms import *
+from awsglue.transforms import *  # noqa: F401,F403
 from awsglue.utils import getResolvedOptions
 from pyspark.context import SparkContext
-from pyspark.sql import functions as F
-from pyspark.sql.functions import col, count, countDistinct, lit, when
+from pyspark.sql import DataFrame, functions as F
+from pyspark.sql.functions import col, count, countDistinct, lit, trim, when
 from pyspark.sql.window import Window
 
-args = getResolvedOptions(sys.argv, ["JOB_NAME", "S3_BUCKET", "GLUE_DATABASE"])
+args = getResolvedOptions(sys.argv, ["JOB_NAME", "S3_BUCKET", "DATABASE_NAME"])
 
 sc = SparkContext()
 glueContext = GlueContext(sc)
@@ -37,153 +47,212 @@ job = Job(glueContext)
 job.init(args["JOB_NAME"], args)
 
 S3_BUCKET = args["S3_BUCKET"]
-GLUE_DATABASE = args["GLUE_DATABASE"]
+DATABASE_NAME = args["DATABASE_NAME"]
 OUTPUT_BASE = f"s3://{S3_BUCKET}/processed-data"
 
+REASON_NEGATIVE = "nilai_negatif"
+REASON_NULL_REQUIRED = "null_kolom_wajib"
+REASON_OUT_OF_RANGE = "nilai_di_luar_rentang"
 
-def read_glue_table(table_name: str):
-    """Read a table from the Glue Data Catalog with error handling."""
+
+def read_glue_table(table_name: str) -> DataFrame:
+    """Baca tabel dari Glue Data Catalog dengan error handling."""
     try:
         df = glueContext.create_dynamic_frame.from_catalog(
-            database=GLUE_DATABASE, table_name=table_name
+            database=DATABASE_NAME, table_name=table_name
         ).toDF()
         print(f"[INFO] Loaded table: {table_name} ({df.count()} rows)")
         return df
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         print(f"[ERROR] Failed to load table {table_name}: {exc}")
         raise
 
 
-def build_course_enrollment_matrix(activities_df, courses_df):
-    """Create a sparse learner x course interaction matrix.
+# ---------------------------------------------------------------------------
+# TAHAP 1: VALIDASI KUALITAS DATA
+# ---------------------------------------------------------------------------
+def validate_farms(df: DataFrame) -> list[DataFrame]:
+    """Validasi farm_profiles. Return [valid_df, rejected_df]."""
+    required = ["farm_id", "region", "soil_type", "farmer_segment"]
+    cond_null = None
+    for c in required:
+        cond = col(c).isNull() | (trim(col(c).cast("string")) == "")
+        cond_null = cond if cond_null is None else (cond_null | cond)
 
-    Score per (learner, course):
-      1.0 enroll | 2.0 complete | 0.5 like | -1.0 skip | 0.25 wishlist
-    """
-    weights = {
-        "enroll": 1.0,
-        "complete": 2.0,
-        "like": 0.5,
-        "skip": -1.0,
-        "add_to_wishlist": 0.25,
-    }
+    cond_neg = (col("farm_size_hectare") < 0) | (col("farm_size_hectare") == 0)
+    cond_range = col("farm_size_hectare") > 1000  # luar rentang wajar
 
-    matrix = activities_df.groupBy("learner_id", "course_id").agg(
-        F.sum(when(col("activity_type") == "enroll", 1.0).otherwise(0.0)).alias("enroll_count"),
-        F.sum(when(col("activity_type") == "complete", 1.0).otherwise(0.0)).alias("complete_count"),
-        F.sum(when(col("activity_type") == "like", 1.0).otherwise(0.0)).alias("like_count"),
-        F.sum(when(col("activity_type") == "skip", 1.0).otherwise(0.0)).alias("skip_count"),
-        F.sum(when(col("activity_type") == "add_to_wishlist", 1.0).otherwise(0.0)).alias("wishlist_count"),
-    ).withColumn(
-        "interaction_score",
-        col("enroll_count") * lit(weights["enroll"])
-        + col("complete_count") * lit(weights["complete"])
-        + col("like_count") * lit(weights["like"])
-        + col("skip_count") * lit(weights["skip"])
-        + col("wishlist_count") * lit(weights["add_to_wishlist"]),
+    valid = df.filter(~(cond_null | cond_neg | cond_range))
+    rejected = df.where(cond_null | cond_neg | cond_range).withColumn(
+        "rejection_reason",
+        when(cond_null, lit(REASON_NULL_REQUIRED))
+        .when(cond_neg, lit(REASON_NEGATIVE))
+        .otherwise(lit(REASON_OUT_OF_RANGE)),
     )
+    return [valid, rejected]
 
-    # Include every course (even with no activity) joined from catalog
-    matrix = courses_df.select("course_id", "category").join(
-        matrix, on="course_id", how="left"
+
+def validate_crops(df: DataFrame) -> list[DataFrame]:
+    """Validasi crop_catalog. Return [valid_df, rejected_df]."""
+    required = ["crop_id", "crop_name", "crop_category"]
+    cond_null = None
+    for c in required:
+        cond = col(c).isNull() | (trim(col(c).cast("string")) == "")
+        cond_null = cond if cond_null is None else (cond_null | cond)
+
+    cond_neg = col("avg_yield_ton_per_ha") < 0
+    cond_range = col("avg_yield_ton_per_ha") > 100
+
+    valid = df.filter(~(cond_null | cond_neg | cond_range))
+    rejected = df.where(cond_null | cond_neg | cond_range).withColumn(
+        "rejection_reason",
+        when(cond_null, lit(REASON_NULL_REQUIRED))
+        .when(cond_neg, lit(REASON_NEGATIVE))
+        .otherwise(lit(REASON_OUT_OF_RANGE)),
     )
-    return matrix
+    return [valid, rejected]
 
 
-def build_course_stats(activities_df, courses_df):
-    """Aggregate per-course statistics."""
-    enroll_df = activities_df.filter(col("activity_type") == "enroll")
-    complete_df = activities_df.filter(col("activity_type") == "complete")
+def validate_activities(df: DataFrame) -> list[DataFrame]:
+    """Validasi farm_activities. Return [valid_df, rejected_df]."""
+    required = ["farm_id", "crop_id", "activity_type"]
+    cond_null = None
+    for c in required:
+        cond = col(c).isNull() | (trim(col(c).cast("string")) == "")
+        cond_null = cond if cond_null is None else (cond_null | cond)
 
-    enroll_stats = enroll_df.groupBy("course_id").agg(
-        count("learner_id").alias("total_enrollments"),
-        countDistinct("learner_id").alias("unique_learners"),
+    cond_neg = col("activity_volume_or_duration") < 0
+    cond_range = col("activity_volume_or_duration") > 10000
+
+    valid = df.filter(~(cond_null | cond_neg | cond_range))
+    rejected = df.where(cond_null | cond_neg | cond_range).withColumn(
+        "rejection_reason",
+        when(cond_null, lit(REASON_NULL_REQUIRED))
+        .when(cond_neg, lit(REASON_NEGATIVE))
+        .otherwise(lit(REASON_OUT_OF_RANGE)),
     )
-    complete_stats = complete_df.groupBy("course_id").agg(
-        count("learner_id").alias("total_completions"),
-    )
+    return [valid, rejected]
 
-    duration_stats = activities_df.groupBy("course_id").agg(
-        F.sum("study_duration_minutes").alias("total_study_minutes"),
-        F.avg("study_duration_minutes").alias("avg_study_minutes"),
-    )
 
-    stats = (
-        courses_df.alias("c")
-        .join(enroll_stats.alias("e"), col("c.course_id") == col("e.course_id"), "left")
-        .join(complete_stats.alias("cc"), col("c.course_id") == col("cc.course_id"), "left")
-        .join(duration_stats.alias("d"), col("c.course_id") == col("d.course_id"), "left")
-        .select(
-            col("c.course_id"),
-            col("c.title"),
-            col("c.category"),
-            col("c.instructor"),
-            col("c.avg_rating"),
-            col("c.is_premium"),
-            col("c.duration_hours"),
-            when(col("e.total_enrollments").isNull(), 0).otherwise(col("e.total_enrollments")).alias("total_enrollments"),
-            when(col("e.unique_learners").isNull(), 0).otherwise(col("e.unique_learners")).alias("unique_learners"),
-            when(col("cc.total_completions").isNull(), 0).otherwise(col("cc.total_completions")).alias("total_completions"),
-            when(col("d.total_study_minutes").isNull(), 0).otherwise(col("d.total_study_minutes")).alias("total_study_minutes"),
-            when(col("d.avg_study_minutes").isNull(), 0).otherwise(col("d.avg_study_minutes")).alias("avg_study_minutes"),
-        ).withColumn(
-            "completion_rate",
-            when(col("total_enrollments") > 0, col("total_completions") / col("total_enrollments")).otherwise(0.0),
+def validate_harvest(df: DataFrame) -> list[DataFrame]:
+    """Validasi harvest_history. Return [valid_df, rejected_df]."""
+    required = ["season", "crop_id", "status"]
+    cond_null = None
+    for c in required:
+        cond = col(c).isNull() | (trim(col(c).cast("string")) == "")
+        cond_null = cond if cond_null is None else (cond_null | cond)
+
+    cond_neg = (
+        (col("area_planted_ha") < 0)
+        | (col("quantity_harvested_ton") < 0)
+        | (col("market_price") < 0)
+    )
+    cond_zero = col("area_planted_ha") == 0
+    cond_outlier = col("quantity_harvested_ton") > 10000  # ekstrem tinggi
+
+    valid = df.filter(~(cond_null | cond_neg | cond_zero | cond_outlier))
+    rejected = df.where(cond_null | cond_neg | cond_zero | cond_outlier).withColumn(
+        "rejection_reason",
+        when(cond_null, lit(REASON_NULL_REQUIRED))
+        .when(cond_neg | cond_zero, lit(REASON_NEGATIVE))
+        .otherwise(lit(REASON_OUT_OF_RANGE)),
+    )
+    return [valid, rejected]
+
+
+# ---------------------------------------------------------------------------
+# TAHAP 2: FEATURE ENGINEERING
+# ---------------------------------------------------------------------------
+def build_farm_activity_matrix(activities_df: DataFrame) -> DataFrame:
+    """Agregasi aktivitas per farm x crop (count per aktivitas + total)."""
+    return (
+        activities_df.groupBy("farm_id", "crop_id")
+        .agg(
+            count(when(col("activity_type") == "planting", 1)).alias("planting_count"),
+            count(when(col("activity_type") == "fertilizing", 1)).alias("fertilizing_count"),
+            count(when(col("activity_type") == "pest_control", 1)).alias("pest_control_count"),
+            count(when(col("activity_type") == "irrigation", 1)).alias("irrigation_count"),
+            count(when(col("activity_type") == "harvest", 1)).alias("harvest_count"),
+            F.sum("activity_volume_or_duration").alias("total_volume"),
         )
+    )
+
+
+def build_crop_stats(harvest_df: DataFrame) -> DataFrame:
+    """Statistik hasil panen per crop (rata-rata yield, tingkat keberhasilan)."""
+    stats = harvest_df.groupBy("crop_id").agg(
+        count("season").alias("record_count"),
+        F.sum("area_planted_ha").alias("total_area_ha"),
+        F.sum("quantity_harvested_ton").alias("total_quantity_ton"),
+        F.avg("quantity_harvested_ton").alias("avg_quantity_ton"),
+        F.avg("market_price").alias("avg_market_price"),
+        # yield per hektar per record, lalu rata-rata
+        F.avg(col("quantity_harvested_ton") / col("area_planted_ha")).alias("avg_yield_ton_per_ha"),
+    ).withColumn(
+        "success_rate",
+        F.count(when(col("status") == "berhasil", 1)) / count("season"),
+    ).withColumn(
+        "partial_failure_rate",
+        F.count(when(col("status") == "gagal_sebagian", 1)) / count("season"),
+    ).withColumn(
+        "failure_rate",
+        F.count(when(col("status") == "gagal", 1)) / count("season"),
     )
     return stats
 
 
-def build_learner_features(profiles_df, activities_df, courses_df):
-    """Build per-learner feature set for modeling."""
-    completed = activities_df.filter(col("activity_type") == "complete")
-
-    # Category popularity per learner from completed courses
-    completion_with_cat = (
-        completed.alias("a")
-        .join(courses_df.select("course_id", "category").alias("c"), col("a.course_id") == col("c.course_id"), "left")
-        .filter(col("c.category").isNotNull())
-        .groupBy("a.learner_id", "c.category")
-        .count()
-        .withColumnRenamed("count", "category_count")
+def build_farm_features(
+    farms_df: DataFrame, activities_df: DataFrame, harvest_df: DataFrame
+) -> DataFrame:
+    """Fitur gabungan per farm untuk model risiko gagal panen."""
+    activity = activities_df.groupBy("farm_id").agg(
+        count("crop_id").alias("total_activities"),
+        F.sum("activity_volume_or_duration").alias("total_activity_volume"),
+        countDistinct("crop_id").alias("crop_diversity"),
+        F.avg("activity_volume_or_duration").alias("avg_activity_volume"),
     )
 
-    # Pick the most frequent category per learner as favorite
-    window = Window.partitionBy("learner_id").orderBy(col("category_count").desc())
-    favorite_cat = (
-        completion_with_cat.withColumn("rank", F.row_number().over(window))
-        .filter(col("rank") == 1)
-        .select(
-            col("learner_id").alias("f_learner_id"),
-            col("category").alias("favorite_category"),
-        )
-    )
-
-    activity_counts = activities_df.groupBy("learner_id").agg(
-        count("activity_id").alias("total_activities"),
-        F.sum(col("study_duration_minutes")).alias("total_study_minutes"),
+    # Agregasi hasil panen per region (farm -> region di crop_stats-level region)
+    harvest = harvest_df.groupBy("region").agg(
+        F.avg("quantity_harvested_ton").alias("region_avg_quantity"),
+        F.avg("market_price").alias("region_avg_price"),
     )
 
     features = (
-        profiles_df.alias("p")
-        .join(activity_counts.alias("ac"), col("p.learner_id") == col("ac.learner_id"), "left")
-        .join(favorite_cat.alias("fc"), col("p.learner_id") == col("fc.f_learner_id"), "left")
+        farms_df.alias("f")
+        # farm_size 0 sudah di-filter di tahap validasi, jadi aman divide
+        .withColumn(
+            "has_negative_yield",
+            lit(0),
+        )  # placeholder; risk label di-training di notebook
+        .join(activity.alias("a"), col("f.farm_id") == col("a.farm_id"), "left")
+        .join(harvest.alias("h"), col("f.region") == col("h.region"), "left")
         .select(
-            col("p.learner_id"),
-            col("p.membership_plan"),
-            col("p.learner_segment"),
-            col("p.join_date"),
-            col("p.total_courses_completed"),
-            when(col("ac.total_activities").isNull(), 0).otherwise(col("ac.total_activities")).alias("total_activities"),
-            when(col("ac.total_study_minutes").isNull(), 0).otherwise(col("ac.total_study_minutes")).alias("total_study_minutes"),
-            col("fc.favorite_category").alias("favorite_category"),
+            col("f.farm_id"),
+            col("f.region"),
+            col("f.soil_type"),
+            col("f.farmer_segment"),
+            col("f.irrigation_type"),
+            col("f.farm_size_hectare"),
+            when(col("a.total_activities").isNull(), 0).otherwise(col("a.total_activities")).alias("total_activities"),
+            when(col("a.total_activity_volume").isNull(), 0).otherwise(col("a.total_activity_volume")).alias("total_activity_volume"),
+            when(col("a.avg_activity_volume").isNull(), 0).otherwise(col("a.avg_activity_volume")).alias("avg_activity_volume"),
+            when(col("a.crop_diversity").isNull(), 0).otherwise(col("a.crop_diversity")).alias("crop_diversity"),
+            when(col("h.region_avg_quantity").isNull(), 0).otherwise(col("h.region_avg_quantity")).alias("region_avg_quantity"),
+            when(col("h.region_avg_price").isNull(), 0).otherwise(col("h.region_avg_price")).alias("region_avg_price"),
         )
     )
     return features
 
 
-def write_parquet(df, output_path: str) -> None:
-    """Write a DataFrame to S3 in Parquet format (overwrite mode)."""
+def assert_column(df: DataFrame, name: str) -> None:
+    """Assert kolom wajib ada; fail fast untuk kualitas data."""
+    if name not in df.columns:
+        raise ValueError(f"Column '{name}' is required but missing from {df}")
+
+
+def write_parquet(df: DataFrame, output_path: str) -> None:
+    """Write DataFrame ke S3 Parquet (overwrite)."""
     print(f"[INFO] Writing {df.count()} rows to {output_path}")
     df.write.mode("overwrite").parquet(output_path)
     print(f"[INFO] Written: {output_path}")
@@ -191,23 +260,41 @@ def write_parquet(df, output_path: str) -> None:
 
 def main() -> None:
     print(f"[INFO] Starting job {args['JOB_NAME']}")
-    print(f"[INFO] S3 bucket: {S3_BUCKET}, Glue database: {GLUE_DATABASE}")
+    print(f"[INFO] S3 bucket: {S3_BUCKET}, Databases: {DATABASE_NAME}")
 
-    learner_profiles = read_glue_table("learner_profiles")
-    learner_activities = read_glue_table("learner_activities")
-    course_catalog = read_glue_table("course_catalog")
+    # ---- TAHAP 1: VALIDASI ----
+    farms_df = read_glue_table("farm_profiles")
+    crops_df = read_glue_table("crop_catalog")
+    activities_df = read_glue_table("farm_activities")
+    harvest_df = read_glue_table("harvest_history")
 
-    print("[INFO] Building course_enrollment_matrix ...")
-    course_enrollment_matrix = build_course_enrollment_matrix(learner_activities, course_catalog)
-    write_parquet(course_enrollment_matrix, f"{OUTPUT_BASE}/course_enrollment_matrix/")
+    farms_valid, farms_rejected = validate_farms(farms_df)
+    crops_valid, crops_rejected = validate_crops(crops_df)
+    activities_valid, activities_rejected = validate_activities(activities_df)
+    harvest_valid, harvest_rejected = validate_harvest(harvest_df)
 
-    print("[INFO] Building course_stats ...")
-    course_stats = build_course_stats(learner_activities, course_catalog)
-    write_parquet(course_stats, f"{OUTPUT_BASE}/course_stats/")
+    rejected = farms_rejected.unionByName(crops_rejected, allowMissingColumns=True) \
+        .unionByName(activities_rejected, allowMissingColumns=True) \
+        .unionByName(harvest_rejected, allowMissingColumns=True)
+    write_parquet(rejected, f"{OUTPUT_BASE}/rejected_records/")
 
-    print("[INFO] Building learner_features ...")
-    learner_features = build_learner_features(learner_profiles, learner_activities, course_catalog)
-    write_parquet(learner_features, f"{OUTPUT_BASE}/learner_features/")
+    # ---- TAHAP 2: FEATURE ENGINEERING ----
+    print("[INFO] Building farm_activity_matrix ...")
+    for c in ["farm_id", "crop_id"]:
+        assert_column(activities_valid, c)
+    farm_activity_matrix = build_farm_activity_matrix(activities_valid)
+    write_parquet(farm_activity_matrix, f"{OUTPUT_BASE}/farm_activity_matrix/")
+
+    print("[INFO] Building crop_stats ...")
+    assert_column(harvest_valid, "crop_id")
+    crop_stats = build_crop_stats(harvest_valid)
+    write_parquet(crop_stats, f"{OUTPUT_BASE}/crop_stats/")
+
+    print("[INFO] Building farm_features ...")
+    assert_column(farms_valid, "farm_id")
+    assert_column(activities_valid, "farm_id")
+    farm_features = build_farm_features(farms_valid, activities_valid, harvest_valid)
+    write_parquet(farm_features, f"{OUTPUT_BASE}/farm_features/")
 
     print(f"[INFO] Job {args['JOB_NAME']} completed successfully.")
     job.commit()

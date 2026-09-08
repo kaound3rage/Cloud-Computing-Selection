@@ -51,47 +51,6 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:frontend-${{ env.VERSION }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:frontend-latest
 
-  build-ai-incident-response:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Set version
-        run: echo "VERSION=$(date +'%Y-%m-%d-%H-%M-%S')" >> $GITHUB_ENV
-
-      - name: Lint with ruff
-        run: |
-          pip install ruff
-          ruff check .
-
-      - name: Compile check
-        working-directory: ai-incident-response
-        run: python -m py_compile app.py
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v6
-        with:
-          context: ./ai-incident-response
-          push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:ai-webhook-${{ env.VERSION }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:ai-webhook-latest
-
   build-example-dataset-csv:
     runs-on: ubuntu-latest
     if: github.event_name == 'push'
@@ -112,14 +71,14 @@ jobs:
 
       - name: Compose raw-data structure
         run: |
-          mkdir -p raw-data/learner-profiles \
-                   raw-data/course-catalog \
-                   raw-data/learner-activities \
-                   raw-data/membership-history
-          cp dataset/output/learner_profiles.csv raw-data/learner-profiles/
-          cp dataset/output/course_catalog.csv raw-data/course-catalog/
-          cp dataset/output/learner_activities.csv raw-data/learner-activities/
-          cp dataset/output/membership_history.csv raw-data/membership-history/
+          mkdir -p raw-data/farm-profiles \
+                   raw-data/crop-catalog \
+                   raw-data/farm-activities \
+                   raw-data/harvest-history
+          cp dataset/output/farm_profiles.csv raw-data/farm-profiles/
+          cp dataset/output/crop_catalog.csv raw-data/crop-catalog/
+          cp dataset/output/farm_activities.csv raw-data/farm-activities/
+          cp dataset/output/harvest_history.csv raw-data/harvest-history/
           zip -r raw-data.zip raw-data/
 
       - name: Upload dataset to GitHub Release
@@ -128,7 +87,7 @@ jobs:
           tag_name: "dataset"
           files: |
             raw-data.zip
-            dataset/output/learner_profiles.csv
-            dataset/output/course_catalog.csv
-            dataset/output/learner_activities.csv
-            dataset/output/membership_history.csv
+            dataset/output/farm_profiles.csv
+            dataset/output/crop_catalog.csv
+            dataset/output/farm_activities.csv
+            dataset/output/harvest_history.csv

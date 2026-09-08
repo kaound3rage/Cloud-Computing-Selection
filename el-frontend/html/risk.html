@@ -3,18 +3,19 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Course Recommendation - EduPintar</title>
+  <title>Prediksi Risiko — AgroSense</title>
   <style>
     :root {
-      --primary: #4f46e5;
-      --primary-dark: #4338ca;
-      --bg: #f8fafc;
-      --text: #1e293b;
-      --muted: #64748b;
+      --primary: #15803d;
+      --primary-dark: #166534;
+      --bg: #f0fdf4;
+      --text: #1a2e1a;
+      --muted: #5b7a5e;
       --card: #ffffff;
-      --border: #e2e8f0;
-      --success: #16a34a;
+      --border: #d1e7d4;
+      --success: #15803d;
       --danger: #dc2626;
+      --warn: #d97706;
     }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -78,23 +79,29 @@
     }
     #result.error { color: var(--danger); }
     #result.success { color: var(--success); font-size: 2rem; text-align: center; }
+    #result.high-risk { color: var(--danger); font-size: 2rem; text-align: center; }
+    .note { font-size: 0.85rem; color: var(--muted); margin-top: 1rem; }
     .back { display: inline-block; margin-top: 1rem; color: var(--primary); text-decoration: none; font-weight: 600; }
   </style>
 </head>
 <body>
   <header>
-    <h1>Course Recommendation</h1>
+    <h1>Prediksi Risiko Gagal Panen</h1>
     <a href="/">&larr; Kembali ke Beranda</a>
   </header>
   <main>
     <form id="form">
-      <label for="learner_id">Learner ID</label>
-      <input type="text" id="learner_id" placeholder="contoh: L00001" required>
-      <label for="course_id">Course ID</label>
-      <input type="text" id="course_id" placeholder="contoh: C00001" required>
-      <button type="submit" id="submit-btn">Cek Rekomendasi</button>
+      <label for="farm_id">Farm ID
+        <input type="text" id="farm_id" placeholder="contoh: F00001" required>
+      </label>
+      <label for="crop_id">Crop ID
+        <input type="text" id="crop_id" placeholder="contoh: C00001" required>
+      </label>
+      <button type="submit" id="submit-btn">Cek Risiko</button>
     </form>
     <div id="result"></div>
+    <p class="note">POST /api/predict-risk → diteruskan ke Lambda Risk Prediction via API Gateway (header x-api-key di-inject server). Risiko &gt; 70% memicu metric HighRiskFarmCount di CloudWatch.</p>
+    <a class="back" href="/">&larr; Beranda</a>
   </main>
 
   <script>
@@ -104,8 +111,8 @@
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
-      const learner_id = document.getElementById('learner_id').value.trim();
-      const course_id = document.getElementById('course_id').value.trim();
+      const farm_id = document.getElementById('farm_id').value.trim();
+      const crop_id = document.getElementById('crop_id').value.trim();
 
       result.style.display = 'block';
       result.className = '';
@@ -113,10 +120,10 @@
       submitBtn.disabled = true;
 
       try {
-        const res = await fetch('/api/recommend', {
+        const res = await fetch('/api/predict-risk', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ learner_id, course_id })
+          body: JSON.stringify({ farm_id, crop_id })
         });
         const data = await res.json();
 
@@ -124,8 +131,10 @@
           throw new Error(data.message || data.error || 'Terjadi kesalahan');
         }
 
-        result.className = 'success';
-        result.textContent = data.recommendation_percentage + '%';
+        const pct = data.risk_percentage;
+        result.textContent = pct + '%';
+        // Tandai risiko tinggi (>70) dengan warna merah.
+        result.className = (typeof pct === 'number' && pct > 70) ? 'high-risk' : 'success';
       } catch (err) {
         result.className = 'error';
         result.textContent = 'Error: ' + err.message;

@@ -1,23 +1,28 @@
 """
 lambda_forecasting/lambda_function.py
 
-AWS Lambda untuk Enrollment Forecasting.
+AWS Lambda untuk Yield Forecasting (AgroSense). Folder ini adalah hasil migrasi
+dari logika forecasting enrollment EduPintar -> forecast hasil panen.
 
 Env vars (lihat .env.example):
   FORECASTING_MODEL_BUCKET, FORECASTING_MODEL_KEY,
-  COURSE_EMBEDDINGS_TABLE, ENROLLMENT_HISTORY_TABLE, LEARNER_ACTIVITIES_TABLE
+  CROP_FEATURES_TABLE, YIELD_HISTORY_TABLE, FARM_ACTIVITIES_TABLE
 
-Request (POST /forecasts via API Gateway):
-  { "course_id": "C0042", "days": 7 }
+Trigger: EventBridge Schedule (bukan API Gateway). Bisa juga dipicu manual
+(invoke langsung) untuk testing.
 
-Response:
-  { "course_id": "...", "forecast": [ {"date": "...", "predicted_enrollments": ...}, ... ] }
+Perilaku:
+  - Untuk setiap crop, hitung forecast volume panen beberapa periode ke depan.
+  - Tulis hasil sebagai ITEM BARU ke DynamoDB `YIELD_HISTORY_TABLE` dengan:
+      crop_id, forecast_period, forecast_quantity_ton, generated_at (timestamp).
+  - Return function berupa summary singkat (untuk log CloudWatch), bukan
+    dikonsumi caller.
 """
 import json
 import logging
+import math
 import os
 import pickle
-import re
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -30,12 +35,11 @@ logger.setLevel(logging.INFO)
 
 FORECASTING_MODEL_BUCKET = os.environ.get("FORECASTING_MODEL_BUCKET")
 FORECASTING_MODEL_KEY = os.environ.get("FORECASTING_MODEL_KEY")
-COURSE_EMBEDDINGS_TABLE = os.environ.get("COURSE_EMBEDDINGS_TABLE")
-ENROLLMENT_HISTORY_TABLE = os.environ.get("ENROLLMENT_HISTORY_TABLE")
-LEARNER_ACTIVITIES_TABLE = os.environ.get("LEARNER_ACTIVITIES_TABLE")
+CROP_FEATURES_TABLE = os.environ.get("CROP_FEATURES_TABLE")
+YIELD_HISTORY_TABLE = os.environ.get("YIELD_HISTORY_TABLE")
+FARM_ACTIVITIES_TABLE = os.environ.get("FARM_ACTIVITIES_TABLE")
 
-MAX_DAYS = 365
-MIN_DAYS = 1
+FORECAST_PERIODS = int(os.environ.get("FORECAST_PERIODS", "8"))
 
 s3 = boto3.client("s3")
 dynamodb = boto3.resource("dynamodb")
@@ -45,7 +49,7 @@ _model_loaded_at: float | None = None
 
 
 def load_model() -> Any:
-    """Download and unpickle the forecasting model from S3 (cached)."""
+    """Download dan unpickle yield model dari S3 (cached)."""
     global _model, _model_loaded_at
 
     if _model is not None and _model_loaded_at is not None:
@@ -68,123 +72,115 @@ def load_model() -> Any:
     return _model
 
 
-def validate_course_id(course_id: Any) -> str:
-    """Validate the course_id format (e.g. C00001)."""
-    course_id = str(course_id).strip()
-    if not re.fullmatch(r"C\d{4,}", course_id):
-        raise ValueError(f"Invalid course_id format: {course_id!r}")
-    return course_id
+def list_crop_ids() -> list[str]:
+    """Ambil daftar crop dari CROP_FEATURES_TABLE (scan, batasi konsumsi)."""
+    if not CROP_FEATURES_TABLE:
+        raise RuntimeError("CROP_FEATURES_TABLE environment variable is required")
+    table = dynamodb.Table(CROP_FEATURES_TABLE)
+    seen: set[str] = set()
+    scan_kwargs: dict[str, Any] = {"ProjectionExpression": "crop_id"}
+    while True:
+        response = table.scan(**scan_kwargs)
+        for item in response.get("Items", []):
+            cid = item.get("crop_id")
+            if cid:
+                seen.add(cid)
+        if "LastEvaluatedKey" not in response:
+            break
+        scan_kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+    logger.info("Found %d crops in %s", len(seen), CROP_FEATURES_TABLE)
+    return sorted(seen)
 
 
-def validate_days(days: Any) -> int:
-    """Validate and clamp the forecast horizon (1-365 days)."""
+def get_crop_baseline(crop_id: str) -> float:
+    """Ambil baseline yield per crop (fallback untuk forecast tanpa model)."""
+    if not CROP_FEATURES_TABLE:
+        return 1.0
+    table = dynamodb.Table(CROP_FEATURES_TABLE)
+    response = table.get_item(Key={"crop_id": crop_id})
+    item = response.get("Item") or {}
+    val = item.get("avg_yield_ton_per_ha") or item.get("avg_quantity_ton") or 1.0
+    return _safe_float(val, 1.0)
+
+
+def run_forecast(model: Any, crop_id: str) -> list[dict]:
+    """Hitung forecast N periode untuk sebuah crop.
+
+    Jika model punya predict, gunakan fitur period_offset + musiman (sin/cos).
+    Fallback: baseline + tren kecil per periode.
+    """
+    now = datetime.now(timezone.utc)
+    rows: list[dict] = []
+    for period in range(1, FORECAST_PERIODS + 1):
+        qty = _forecast_for_period(model, crop_id, period)
+        rows.append({
+            "crop_id": crop_id,
+            "forecast_period": f"period_{period}",
+            "forecast_quantity_ton": round(qty, 2),
+            "generated_at": now.isoformat(timespec="seconds"),
+        })
+    return rows
+
+
+def _forecast_for_period(model: Any, crop_id: str, period: int) -> float:
+    """Prediksi qty untuk 1 periode; default -10% jika inference gagal."""
     try:
-        days = int(days)
-    except (TypeError, ValueError):
-        raise ValueError(f"Invalid days value: {days!r}") from None
-
-    if days < MIN_DAYS or days > MAX_DAYS:
-        raise ValueError(f"days must be between {MIN_DAYS} and {MAX_DAYS}")
-    return days
-
-
-def get_enrollment_history(course_id: str) -> dict | None:
-    """Query historical enrollment data from DynamoDB."""
-    if not ENROLLMENT_HISTORY_TABLE:
-        raise RuntimeError("ENROLLMENT_HISTORY_TABLE environment variable is required")
-
-    table = dynamodb.Table(ENROLLMENT_HISTORY_TABLE)
-    response = table.get_item(Key={"course_id": course_id})
-    return response.get("Item")
+        if model is not None and hasattr(model, "predict"):
+            off = float(period - 1)
+            features = [off, float(math.sin(2 * math.pi * off / 12)),
+                        float(math.cos(2 * math.pi * off / 12))]
+            value = model.predict([features])[0]
+            return max(0.0, float(value))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Forecast inference failed crop=%s: %s", crop_id, exc)
+    return max(0.0, get_crop_baseline(crop_id) * 0.9)
 
 
-def run_forecast(model: Any, history: dict | None, course_id: str, days: int) -> list[dict]:
-    """Generate a daily enrollment forecast for the requested horizon."""
-    base = _baseline_daily_enrollments(history)
-
-    if model is not None and history and hasattr(model, "predict"):
-        try:
-            future = model.predict(days=days).tolist()
-            return [{
-                "date": (datetime.now(timezone.utc).date() + timedelta(days=i)).isoformat(),
-                "predicted_enrollments": round(max(0.0, float(v)), 2),
-            } for i, v in enumerate(future)]
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "Model forecast failed (%s); falling back to baseline", exc
-            )
-
-    return [{
-        "date": (datetime.now(timezone.utc).date() + timedelta(days=i)).isoformat(),
-        "predicted_enrollments": round(max(0.0, base * (1 + 0.02 * i)), 2),
-    } for i in range(days)]
+def write_yield_history(items: list[dict]) -> None:
+    """Tulis item forecast sebagai item baru ke YIELD_HISTORY_TABLE."""
+    if not YIELD_HISTORY_TABLE:
+        raise RuntimeError("YIELD_HISTORY_TABLE environment variable is required")
+    table = dynamodb.Table(YIELD_HISTORY_TABLE)
+    with table.batch_writer() as batch:
+        for item in items:
+            batch.put_item(Item=item)
+    logger.info("Wrote %d items to %s", len(items), YIELD_HISTORY_TABLE)
 
 
-def _baseline_daily_enrollments(history: dict | None) -> float:
-    """Derive a naive baseline (avg daily enrollments) from history."""
-    if not history:
-        return 0.0
-    total = _safe_float(history.get("total_enrollments", 0))
-    days = _safe_float(history.get("history_days", 30))
-    if days <= 0:
-        return 0.0
-    return total / days
-
-
-def _safe_float(value: Any) -> float:
-    """Convert a value to float, returning 0.0 on failure."""
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    """Konversi ke float dengan default."""
     try:
         return float(value)
     except (TypeError, ValueError):
-        return 0.0
-
-
-def build_ok_response(payload: dict, status: int = 200) -> dict:
-    """Build a standard API Gateway HTTP response."""
-    return {
-        "statusCode": status,
-        "headers": {
-            "Content-Type": "application/json",
-            "Access-Control-Allow-Origin": os.environ.get("CORS_ORIGIN", "*"),
-        },
-        "body": json.dumps(payload),
-    }
-
-
-def build_error_response(error: BaseException, status: int = 500) -> dict:
-    """Build a standard API Gateway error response."""
-    logger.error("Request failed: %s", error)
-    return build_ok_response(
-        {"error": type(error).__name__, "message": str(error)}, status=status
-    )
+        return default
 
 
 def lambda_handler(event: dict, context: Any) -> dict:
-    """Main Lambda entry point."""
-    request_id = getattr(context, "aws_request_id", str(uuid.uuid4()))
-    logger.info("Request %s received", request_id)
+    """Entry point utama Lambda (EventBridge Schedule / manual invoke)."""
+    run_id = getattr(context, "aws_request_id", str(uuid.uuid4()))
+    logger.info("Run %s received (event keys: %s)", run_id, list((event or {}).keys()))
 
-    try:
-        body = event.get("body") or "{}"
-        if isinstance(body, str):
-            body = json.loads(body)
+    model = load_model()
+    crop_ids = list_crop_ids()
+    if not crop_ids:
+        logger.warning("No crops found; nothing to forecast")
+        return {"run_id": run_id, "crops_processed": 0, "status": "no_crops"}
 
-        course_id = validate_course_id(body.get("course_id"))
-        days = validate_days(body.get("days", 7))
+    total_items = 0
+    for crop_id in crop_ids:
+        forecast = run_forecast(model, crop_id)
+        write_yield_history(forecast)
+        total_items += len(forecast)
 
-        model = load_model()
-        history = get_enrollment_history(course_id)
-        forecast = run_forecast(model, history, course_id, days)
+    summary = {
+        "run_id": run_id,
+        "crops_processed": len(crop_ids),
+        "forecast_items_written": total_items,
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    logger.info("Yield forecasting complete: %s", json.dumps(summary, ensure_ascii=False))
+    return summary
 
-        logger.info(
-            "Request %s complete: course=%s days=%d forecast_len=%d",
-            request_id, course_id, days, len(forecast),
-        )
-        return build_ok_response({
-            "course_id": course_id,
-            "forecast": forecast,
-        })
-    except (ValueError, json.JSONDecodeError) as exc:
-        return build_error_response(exc, status=400)
-    except Exception as exc:  # noqa: BLE001
-        return build_error_response(exc)
+
+if __name__ == "__main__":
+    print(json.dumps(lambda_handler({"source": "manual-test"}, None), ensure_ascii=False))

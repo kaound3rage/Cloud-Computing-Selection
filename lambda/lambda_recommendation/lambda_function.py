@@ -1,16 +1,21 @@
 """
 lambda_recommendation/lambda_function.py
 
-AWS Lambda untuk Intelligent Course Recommendation.
+AWS Lambda untuk Risk Prediction (AgroSense). Folder ini adalah hasil migrasi
+dari logika rekomendasi EduPintar -> risiko gagal panen.
 
 Env vars (lihat .env.example):
-  MODEL_BUCKET, MODEL_KEY, LEARNERS_TABLE, COURSE_TABLE
+  MODEL_BUCKET, MODEL_KEY, FARMS_TABLE, CROP_TABLE
 
-Request (POST /predict via API Gateway):
-  { "learner_id": "L0001", "course_id": "C0042" }
+Trigger: API Gateway (sinkron). Request:
+  { "farm_id": "F00001", "crop_id": "C00001" }
 
 Response:
-  { "learner_id": "...", "course_id": "...", "recommendation_percentage": 0.0-100.0 }
+  { "farm_id": "...", "crop_id": "...", "risk_percentage": 0.0-100.0 }
+
+Tambahan:
+  - Jika risk_percentage > 70, publish custom CloudWatch metric
+    `HighRiskFarmCount` (namespace `AgroSense/Business`) via put_metric_data.
 """
 import json
 import logging
@@ -28,18 +33,23 @@ logger.setLevel(logging.INFO)
 
 MODEL_BUCKET = os.environ.get("MODEL_BUCKET")
 MODEL_KEY = os.environ.get("MODEL_KEY")
-LEARNERS_TABLE = os.environ.get("LEARNERS_TABLE")
-COURSE_TABLE = os.environ.get("COURSE_TABLE")
+FARMS_TABLE = os.environ.get("FARMS_TABLE")
+CROP_TABLE = os.environ.get("CROP_TABLE")
 
 s3 = boto3.client("s3")
 dynamodb = boto3.resource("dynamodb")
+cloudwatch = boto3.client("cloudwatch")
+
+HIGH_RISK_THRESHOLD = 70.0
+NAMESPACE = "AgroSense/Business"
+METRIC_NAME = "HighRiskFarmCount"
 
 _model: Any | None = None
 _model_loaded_at: float | None = None
 
 
 def load_model() -> Any:
-    """Download and unpickle the model from S3 (cached across invocations)."""
+    """Download dan unpickle model dari S3 (cache di luar handler)."""
     global _model, _model_loaded_at
 
     if _model is not None and _model_loaded_at is not None:
@@ -56,44 +66,44 @@ def load_model() -> Any:
     return _model
 
 
-def get_learner_features(learner_id: str) -> dict | None:
-    """Query learner features from DynamoDB."""
-    if not LEARNERS_TABLE:
-        raise RuntimeError("LEARNERS_TABLE environment variable is required")
+def get_farm_features(farm_id: str) -> dict | None:
+    """Query fitur farm dari DynamoDB (FARMS_TABLE)."""
+    if not FARMS_TABLE:
+        raise RuntimeError("FARMS_TABLE environment variable is required")
 
-    table = dynamodb.Table(LEARNERS_TABLE)
-    response = table.get_item(Key={"learner_id": learner_id})
+    table = dynamodb.Table(FARMS_TABLE)
+    response = table.get_item(Key={"farm_id": farm_id})
     return response.get("Item")
 
 
-def get_course_features(course_id: str) -> dict | None:
-    """Query course features from DynamoDB."""
-    if not COURSE_TABLE:
-        raise RuntimeError("COURSE_TABLE environment variable is required")
+def get_crop_features(crop_id: str) -> dict | None:
+    """Query fitur crop dari DynamoDB (CROP_TABLE)."""
+    if not CROP_TABLE:
+        raise RuntimeError("CROP_TABLE environment variable is required")
 
-    table = dynamodb.Table(COURSE_TABLE)
-    response = table.get_item(Key={"course_id": course_id})
+    table = dynamodb.Table(CROP_TABLE)
+    response = table.get_item(Key={"crop_id": crop_id})
     return response.get("Item")
 
 
-def validate_learner_id(learner_id: Any) -> str:
-    """Validate the learner_id format (e.g. L00001)."""
-    learner_id = str(learner_id).strip()
-    if not re.fullmatch(r"L\d{4,}", learner_id):
-        raise ValueError(f"Invalid learner_id format: {learner_id!r}")
-    return learner_id
+def validate_farm_id(farm_id: Any) -> str:
+    """Validasi format farm_id (mis. F00001)."""
+    farm_id = str(farm_id).strip()
+    if not re.fullmatch(r"F\d{4,}", farm_id):
+        raise ValueError(f"Invalid farm_id format: {farm_id!r}")
+    return farm_id
 
 
-def validate_course_id(course_id: Any) -> str:
-    """Validate the course_id format (e.g. C00001)."""
-    course_id = str(course_id).strip()
-    if not re.fullmatch(r"C\d{4,}", course_id):
-        raise ValueError(f"Invalid course_id format: {course_id!r}")
-    return course_id
+def validate_crop_id(crop_id: Any) -> str:
+    """Validasi format crop_id (mis. C00001)."""
+    crop_id = str(crop_id).strip()
+    if not re.fullmatch(r"C\d{4,}", crop_id):
+        raise ValueError(f"Invalid crop_id format: {crop_id!r}")
+    return crop_id
 
 
-def build_ok_response(payload: dict, status: int = 200) -> dict:
-    """Build a standard API Gateway HTTP response."""
+def build_response(payload: dict, status: int = 200) -> dict:
+    """Buat response standar API Gateway."""
     return {
         "statusCode": status,
         "headers": {
@@ -104,54 +114,66 @@ def build_ok_response(payload: dict, status: int = 200) -> dict:
     }
 
 
-def build_error_response(error: BaseException) -> dict:
-    """Build a standard API Gateway error response."""
-    logger.error("Request failed: %s", error)
-    return build_ok_response(
-        {"error": type(error).__name__, "message": str(error)}, status=500
+def emit_high_risk_metric(count: int = 1) -> None:
+    """Publish custom CloudWatch metric HighRiskFarmCount."""
+    cloudwatch.put_metric_data(
+        Namespace=NAMESPACE,
+        MetricData=[{
+            "MetricName": METRIC_NAME,
+            "Value": float(count),
+            "Unit": "Count",
+        }],
     )
+    logger.info("Published %s=%s to %s", METRIC_NAME, count, NAMESPACE)
 
 
-def compute_recommendation(model: Any, learner_features: dict, course_features: dict) -> float:
-    """Run the model and return a recommendation percentage."""
+def compute_risk_percentage(model: Any, farm_features: dict, crop_features: dict) -> float:
+    """Jalankan model dan Kembalikan risk_percentage (0-100)."""
     if model is None:
         return 0.0
 
     try:
+        features = _flatten_features(farm_features, crop_features)
         if hasattr(model, "predict_proba"):
-            features = _flatten_features(learner_features, course_features)
             proba = model.predict_proba([features])[0]
-            score = float(max(proba)) * 100.0
+            # proba[1] = probabilitas kelas positif (gagal panen)
+            if len(proba) >= 2:
+                score = float(proba[1]) * 100.0
+            else:
+                score = float(proba[0]) * 100.0
         elif hasattr(model, "predict"):
-            features = _flatten_features(learner_features, course_features)
             score = float(model.predict([features])[0])
         else:
             logger.warning("Model has no predict/predict_proba; returning 0")
             return 0.0
         return max(0.0, min(100.0, score))
-    except Exception:
+    except Exception:  # noqa: BLE001
         logger.exception("Model inference failed")
         return 0.0
 
 
-def _flatten_features(learner_features: dict, course_features: dict) -> list[float]:
-    """Flatten learner + course features into a numeric vector."""
+def _flatten_features(farm_features: dict, crop_features: dict) -> list[float]:
+    """Flatten fitur farm + crop menjadi vektor numerik sesuai RISK_FEATURES."""
     vector: list[float] = []
-
-    for key in ["total_courses_completed", "total_activities", "total_study_minutes"]:
-        vector.append(_safe_float(learner_features.get(key)))
-
-    for key in ["avg_rating", "duration_hours"]:
-        vector.append(_safe_float(course_features.get(key)))
-
-    is_premium = 1.0 if course_features.get("is_premium") else 0.0
-    vector.append(is_premium)
-
+    for key in [
+        "farm_size_hectare",
+        "total_activities",
+        "total_activity_volume",
+        "avg_activity_volume",
+        "crop_diversity",
+        "region_avg_quantity",
+        # Transitif crop
+        "avg_yield_ton_per_ha",
+    ]:
+        if key in farm_features:
+            vector.append(_safe_float(farm_features.get(key)))
+        else:
+            vector.append(_safe_float(crop_features.get(key)))
     return vector
 
 
 def _safe_float(value: Any) -> float:
-    """Convert a value to float, returning 0.0 on failure."""
+    """Konversi ke float, 0.0 bila gagal."""
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -159,7 +181,7 @@ def _safe_float(value: Any) -> float:
 
 
 def lambda_handler(event: dict, context: Any) -> dict:
-    """Main Lambda entry point."""
+    """Entry point utama Lambda."""
     request_id = getattr(context, "aws_request_id", str(uuid.uuid4()))
     logger.info("Request %s received", request_id)
 
@@ -168,24 +190,40 @@ def lambda_handler(event: dict, context: Any) -> dict:
         if isinstance(body, str):
             body = json.loads(body)
 
-        learner_id = validate_learner_id(body.get("learner_id"))
-        course_id = validate_course_id(body.get("course_id"))
+        farm_id = validate_farm_id(body.get("farm_id"))
+        crop_id = validate_crop_id(body.get("crop_id"))
 
-        learner_features = get_learner_features(learner_id) or {}
-        course_features = get_course_features(course_id) or {}
+        farm_features = get_farm_features(farm_id)
+        crop_features = get_crop_features(crop_id)
+        if farm_features is None:
+            return build_response(
+                {"error": "FarmNotFound", "message": f"Farm {farm_id} tidak ditemukan"},
+                status=404,
+            )
+        if crop_features is None:
+            return build_response(
+                {"error": "CropNotFound", "message": f"Crop {crop_id} tidak ditemukan"},
+                status=404,
+            )
 
         model = load_model()
-        score = compute_recommendation(model, learner_features, course_features)
+        risk = compute_risk_percentage(model, farm_features, crop_features)
 
-        logger.info("Request %s complete: score=%.2f", request_id, score)
-        return build_ok_response({
-            "learner_id": learner_id,
-            "course_id": course_id,
-            "recommendation_percentage": round(score, 2),
+        if risk > HIGH_RISK_THRESHOLD:
+            emit_high_risk_metric()
+
+        logger.info("Request %s complete: risk=%.2f", request_id, risk)
+        return build_response({
+            "farm_id": farm_id,
+            "crop_id": crop_id,
+            "risk_percentage": round(risk, 2),
         })
     except (ValueError, json.JSONDecodeError) as exc:
-        return build_ok_response(
+        return build_response(
             {"error": type(exc).__name__, "message": str(exc)}, status=400
         )
     except Exception as exc:  # noqa: BLE001
-        return build_error_response(exc)
+        logger.error("Request failed: %s", exc)
+        return build_response(
+            {"error": type(exc).__name__, "message": str(exc)}, status=500
+        )

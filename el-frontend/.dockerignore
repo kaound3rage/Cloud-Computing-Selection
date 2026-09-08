@@ -2,3 +2,5 @@
 .git/
 Dockerfile
 .dockerignore
+farm-frontend
+el-frontend

@@ -3,19 +3,19 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Enrollment Forecasting - EduPintar</title>
+  <title>Yield Forecasting — AgroSense</title>
   <style>
     :root {
-      --primary: #4f46e5;
-      --primary-dark: #4338ca;
-      --bg: #f8fafc;
-      --text: #1e293b;
-      --muted: #64748b;
+      --primary: #15803d;
+      --primary-dark: #166534;
+      --bg: #f0fdf4;
+      --text: #1a2e1a;
+      --muted: #5b7a5e;
       --card: #ffffff;
-      --border: #e2e8f0;
+      --border: #d1e7d4;
       --danger: #dc2626;
-      --line: #e2e8f0;
-      --bar: #6366f1;
+      --line: #d1e7d4;
+      --bar: #16a34a;
     }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -42,7 +42,7 @@
       border-radius: 12px;
       padding: 1.5rem;
       display: grid;
-      grid-template-columns: 2fr 1fr auto;
+      grid-template-columns: 1fr auto;
       gap: 1rem;
       align-items: end;
     }
@@ -75,7 +75,11 @@
     .bar-col { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; text-align: center; }
     .bar { background: var(--bar); border-radius: 3px 3px 0 0; min-height: 2px; }
     .bar-label { font-size: 0.65rem; color: var(--muted); margin-top: 0.3rem; white-space: nowrap; }
-    .summary { display: flex; justify-content: space-between; margin-top: 1rem; font-weight: 600; }
+    .summary { display: flex; justify-content: space-between; margin-top: 1rem; font-weight: 600; flex-wrap: wrap; gap: 0.5rem; }
+    table { width: 100%; border-collapse: collapse; margin-top: 1rem; font-size: 0.9rem; }
+    th, td { border: 1px solid var(--border); padding: 0.5rem; text-align: left; }
+    th { background: var(--bg); }
+    .note { font-size: 0.85rem; color: var(--muted); margin-top: 1rem; }
     .back { display: inline-block; margin-top: 1rem; color: var(--primary); text-decoration: none; font-weight: 600; }
     @media (max-width: 560px) {
       form { grid-template-columns: 1fr; }
@@ -84,19 +88,20 @@
 </head>
 <body>
   <header>
-    <h1>Enrollment Forecasting</h1>
+    <h1>Forecasting Hasil Panen</h1>
     <a href="/">&larr; Kembali ke Beranda</a>
   </header>
   <main>
     <form id="form">
-      <label for="course_id">Course ID</label>
-      <input type="text" id="course_id" placeholder="contoh: C00001" required>
-      <label for="days">Jumlah Hari</label>
-      <input type="number" id="days" value="7" min="1" max="365" required>
+      <label for="crop_id">Crop ID
+        <input type="text" id="crop_id" placeholder="contoh: C00001" required>
+      </label>
       <button type="submit" id="submit-btn">Lihat Forecast</button>
     </form>
     <div id="error"></div>
     <div id="result" class="chart-wrap"></div>
+    <p class="note">GET /api/yield-forecast/{crop_id} → dibaca <strong>langsung dari DynamoDB</strong> (YIELD_HISTORY_TABLE) oleh frontend, bukan via API Gateway.</p>
+    <a class="back" href="/">&larr; Beranda</a>
   </main>
 
   <script>
@@ -107,18 +112,16 @@
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
-      const course_id = document.getElementById('course_id').value.trim();
-      const days = document.getElementById('days').value;
+      const crop_id = document.getElementById('crop_id').value.trim();
       errorBox.style.display = 'none';
       result.style.display = 'block';
       result.innerHTML = '<p>Memproses...</p>';
       submitBtn.disabled = true;
 
       try {
-        const res = await fetch('/api/forecast', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ course_id, days: parseInt(days, 10) })
+        // Endpoint langsung DynamoDB: GET dengan crop_id di path.
+        const res = await fetch('/api/yield-forecast/' + encodeURIComponent(crop_id), {
+          method: 'GET'
         });
         const data = await res.json();
 
@@ -126,7 +129,7 @@
           throw new Error(data.message || data.error || 'Terjadi kesalahan');
         }
 
-        renderChart(data.forecast, data.course_id);
+        renderForecast(data.forecasts || data.forecast || [], data.crop_id);
       } catch (err) {
         result.style.display = 'none';
         errorBox.textContent = 'Error: ' + err.message;
@@ -136,27 +139,48 @@
       }
     });
 
-    function renderChart(forecast, courseId) {
-      if (!Array.isArray(forecast) || forecast.length === 0) {
-        result.innerHTML = '<p>Tidak ada data forecast.</p>';
+    function qtyOf(item) {
+      // Dukung beberapa nama field: forecast_quantity_ton (Lambda) / predicted_*.
+      const v = item.forecast_quantity_ton ?? item.predicted_quantity_ton
+        ?? item.predicted_enrollments ?? item.quantity_ton ?? 0;
+      return Number(v) || 0;
+    }
+
+    function periodOf(item) {
+      return item.forecast_period ?? item.date ?? item.generated_at ?? '-';
+    }
+
+    function renderForecast(forecasts, cropId) {
+      if (!Array.isArray(forecasts) || forecasts.length === 0) {
+        result.innerHTML = '<p>Tidak ada data forecast untuk crop ini.</p>';
         return;
       }
 
-      const maxVal = Math.max(...forecast.map(f => f.predicted_enrollments), 1);
+      const maxVal = Math.max(...forecasts.map(qtyOf), 1);
       let html = '<div class="chart">';
-      for (const item of forecast) {
-        const height = Math.max((item.predicted_enrollments / maxVal) * 100, 2);
+      for (const item of forecasts) {
+        const qty = qtyOf(item);
+        const period = periodOf(item);
+        const height = Math.max((qty / maxVal) * 100, 2);
+        const label = String(period).slice(5, 10) || String(period);
         html += `<div class="bar-col">
-                   <div class="bar" style="height:${height}%" title="${item.predicted_enrollments} enrollments"></div>
-                   <div class="bar-label">${item.date.slice(5)}</div>
+                   <div class="bar" style="height:${height}%" title="${qty} ton (${period})"></div>
+                   <div class="bar-label">${label}</div>
                  </div>`;
       }
       html += '</div>';
+      const total = forecasts.reduce((s, f) => s + qtyOf(f), 0);
       html += `<div class="summary">
-                 <span>Course: ${courseId}</span>
-                 <span>Total: ${forecast.reduce((s, f) => s + f.predicted_enrollments, 0).toFixed(2)}</span>
-                 <span>Avg: ${(forecast.reduce((s, f) => s + f.predicted_enrollments, 0) / forecast.length).toFixed(2)}</span>
+                 <span>Crop: ${cropId}</span>
+                 <span>Item: ${forecasts.length}</span>
+                 <span>Total: ${total.toFixed(2)} ton</span>
+                 <span>Avg: ${(total / forecasts.length).toFixed(2)} ton</span>
                </div>`;
+      html += '<table><thead><tr><th>Periode</th><th>Qty (ton)</th><th>Generated At</th></tr></thead><tbody>';
+      for (const item of forecasts) {
+        html += `<tr><td>${periodOf(item)}</td><td>${qtyOf(item)}</td><td>${item.generated_at ?? '-'}</td></tr>`;
+      }
+      html += '</tbody></table>';
       result.innerHTML = html;
     }
   </script>
